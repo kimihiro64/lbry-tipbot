@@ -1,25 +1,29 @@
 require 'bitcoin-client'
-Dir['./coin_config/*.rb'].each {|file| require file }
 require './bitcoin_client_extensions.rb'
+
 class Command
   attr_accessor :result, :action, :user_name, :icon_emoji
-  ACTIONS = %w(balance deposit tip withdraw networkinfo commands)
+  ACTIONS = %w(balance deposit tip withdraw networkinfo help)
+
   def initialize(slack_params)
-    @coin_config_module = Kernel.const_get ENV['COIN'].capitalize
-    text = slack_params['text']
-    @params = text.split(/\s+/)
-    raise "WACK" unless @params.shift == slack_params['trigger_word']
+    #raise "WACK" unless slack_params['command'] == '/tipbot'
+
+    @command = slack_params['command']
+    @params = slack_params['text'].split(/\s+/)
     @user_name = slack_params['user_name']
-    @user_id = slack_params['user_id']
+    @user_id = slack_params['user_name']
     @action = @params.shift
     @result = {}
+
+    @currency='LBC'
+    @tx_template = " (<https://explorer.lbry.io/tx/TXID|tx>)"
   end
 
   def perform
     if ACTIONS.include?(@action)
       self.send("#{@action}".to_sym)
     else
-      raise @coin_config_module::PERFORM_ERROR
+      raise "I don't know how to do that"
     end
   end
 
@@ -29,65 +33,43 @@ class Command
 
   def balance
     balance = client.getbalance(@user_id)
-    @result[:text] = "@#{@user_name} #{@coin_config_module::BALANCE_REPLY_PRETEXT} #{balance}#{@coin_config_module::CURRENCY_ICON}"
-    if balance > @coin_config_module::WEALTHY_UPPER_BOUND
-      @result[:text] += @coin_config_module::WEALTHY_UPPER_BOUND_POSTTEXT
-      @result[:icon_emoji] = @coin_config_module::WEALTHY_UPPER_BOUND_EMOJI
-    elsif balance > 0 && balance < @coin_config_module::WEALTHY_UPPER_BOUND
-      @result[:text] += @coin_config_module::BALANCE_REPLY_POSTTEXT
-    end
-
+    @result[:text] = "@#{@user_name} You have #{balance}#{@currency}"
   end
 
   def deposit
-    @result[:text] = "#{@coin_config_module::DEPOSIT_PRETEXT} #{user_address(@user_id)} #{@coin_config_module::DEPOSIT_POSTTEXT}"
+    @result[:text] = "Your address is #{user_address(@user_id)}"
   end
 
   def tip
-    user = @params.shift
-    raise @coin_config_module::TIP_ERROR_TEXT unless user =~ /<@(U.+)>/
+    target_user = @params.shift
+    puts target_user
+    raise "proper syntax is `tip @username AMOUNT`" unless target_user =~ /@(.+)/
 
-    target_user = $1
+    target_user = target_user.sub('@','')
     set_amount
 
     tx = client.sendfrom @user_id, user_address(target_user), @amount
-    @result[:text] = "#{@coin_config_module::TIP_PRETEXT} <@#{@user_id}> => <@#{target_user}> #{@amount}#{@coin_config_module::CURRENCY_ICON}"
-    @result[:attachments] = [{
-      fallback:"<@#{@user_id}> => <@#{target_user}> #{@amount}Ð",
-      color: "good",
-      fields: [{
-        title: "such tipping #{@amount}Ð wow!",
-        value: "http://dogechain.info/tx/#{tx}",
-        short: false
-      },{
-        title: "generous shibe",
-        value: "<@#{@user_id}>",
-        short: true
-      },{
-        title: "lucky shibe",
-        value: "<@#{target_user}>",
-        short: true
-      }]
-    }] 
-    
-    @result[:text] += " (<#{@coin_config_module::TIP_POSTTEXT1}#{tx}#{@coin_config_module::TIP_POSTTEXT2}>)"
+    @result[:text] = "Wubba lubba dub dub! @#{@user_id} tipped @#{target_user} #{@amount}#{@currency}"
+    @result[:text] += @tx_template.sub('TXID', tx)
+    @result[:response_type] = 'in_channel'
   end
-
-  alias :":dogecoin:" :tip
 
   def withdraw
     address = @params.shift
+    raise "proper syntax is `withdraw ADDRESS AMOUNT`" unless address
+
     set_amount
+
     tx = client.sendfrom @user_id, address, @amount
-    @result[:text] = "#{@coin_config_module::WITHDRAW_TEXT} <@#{@user_id}> => #{address} #{@amount}#{@coin_config_module::CURRENCY_ICON} "
-    @result[:text] += " (<#{@coin_config_module::TIP_POSTTEXT1}#{tx}#{@coin_config_module::TIP_POSTTEXT2}>)"
-    @result[:icon_emoji] = @coin_config_module::WITHDRAW_ICON
+    @result[:text] = "@#{@user_id} withdrew #{@amount}#{@currency} to #{address}"
+    @result[:text] += @tx_template.sub('TXID', tx)
+    @result[:icon_emoji] = ":shit:"
   end
 
   def networkinfo
     info = client.getinfo
     @result[:text] = info.to_s
-    @result[:icon_emoji] = @coin_config_module::NETWORKINFO_ICON
+    @result[:icon_emoji] = ":bar_chart:"
   end
 
   private
@@ -96,16 +78,18 @@ class Command
     amount = @params.shift
     @amount = amount.to_i
     randomize_amount if (@amount == "random")
-    
-    raise @coin_config_module::TOO_POOR_TEXT unless available_balance >= @amount + 1
-    raise @coin_config_module::NO_PURPOSE_LOWER_BOUND_TEXT if @amount < @coin_config_module::NO_PURPOSE_LOWER_BOUND
+
+    min_amount = 0.00000001
+
+    raise "Too poor. Sorry." unless available_balance >= @amount + 1
+    raise "Min transfer amount: #{min_amount}#{@currency}" if @amount < min_amount
   end
 
   def randomize_amount
     lower = [1, @params.shift.to_i].min
     upper = [@params.shift.to_i, available_balance].max
     @amount = rand(lower..upper)
-    @result[:icon_emoji] = @coin_config_module::RANDOMIZED_EMOJI
+    @result[:icon_emoji] = ":black_joker:"
   end
 
   def available_balance
@@ -121,9 +105,15 @@ class Command
     end
   end
 
-  def commands
-    
-    @result[:text] = "#{ACTIONS.join(', ' )}"
+  def help
+    @result[:text] = "Possible commands: `#{ACTIONS.join('`, `' )}`\n" +
+      "`#{@command} balance` - Show your balance\n" +
+      "`#{@command} tip @username AMOUNT` - Send AMOUNT coins to @username\n" +
+      "`#{@command} deposit` - Show your address to deposit coins into\n" +
+      "`#{@command} withdraw ADDRESS AMOUNT` - Send AMOUNT coins to ADDRESS\n" +
+      "`#{@command} networkinfo` - Show network info\n" +
+      "`#{@command} help` - Show this message"
   end
 
 end
+
