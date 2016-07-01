@@ -3,7 +3,7 @@ require './bitcoin_client_extensions.rb'
 
 class Command
   attr_accessor :result, :action, :user_name, :icon_emoji
-  ACTIONS = %w(balance deposit tip withdraw networkinfo help)
+  ACTIONS = %w(balance deposit tip withdraw help)
 
   def initialize(slack_params)
     #raise "WACK" unless slack_params['command'] == '/tipbot'
@@ -66,12 +66,6 @@ class Command
     @result[:icon_emoji] = ":shit:"
   end
 
-  def networkinfo
-    info = client.getinfo
-    @result[:text] = info.to_s
-    @result[:icon_emoji] = ":bar_chart:"
-  end
-
   private
 
   def set_amount
@@ -111,7 +105,6 @@ class Command
       "`#{@command} tip @username AMOUNT` - Send AMOUNT coins to @username\n" +
       "`#{@command} deposit` - Show your address to deposit coins into\n" +
       "`#{@command} withdraw ADDRESS AMOUNT` - Send AMOUNT coins to ADDRESS\n" +
-      "`#{@command} networkinfo` - Show network info\n" +
       "`#{@command} help` - Show this message"
   end
 
